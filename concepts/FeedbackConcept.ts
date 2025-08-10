@@ -15,6 +15,11 @@ export class FeedbackConcept {
     if (avgStudentCount > 0 && avgPhoneUsers >= Math.max(2, Math.round(0.1 * avgStudentCount))) {
       suggestions.push("Introduce a timed challenge to re-focus attention.");
     }
+    // ✅ New low-phone-usage rule
+    if (phoneUseRatio < 0.05) {
+      suggestions.push("Great focus today — keep it up!");
+    }
+
     if (suggestions.length === 0) {
       suggestions.push("Engagement looks steady. Keep current pace.");
     }
