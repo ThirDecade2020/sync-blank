@@ -1,0 +1,31 @@
+<concept_spec>
+
+concept Stream
+
+purpose
+    manage a live video stream lifecycle and emit frame events for analysis
+
+state
+    a boolean running flag
+    a set of Frames with
+        a frameId String
+        a ts Number
+        a dataRef String
+
+actions
+    start () : (running: Boolean)
+        set running = true
+        return running
+    stop () : (running: Boolean)
+        set running = false
+        return running
+    frame (frameId: String, ts: Number, dataRef: String) : (frameId: String)
+        register a frame arrival for analysis
+        return frameId
+
+queries
+    _latest () : (frameId: String, ts: Number)
+        return the most recent frame if any
+
+</concept_spec>
+

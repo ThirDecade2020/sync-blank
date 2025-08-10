@@ -1,85 +1,57 @@
-// Basic, complete example of how to use the engine
-import {
-    actions,
-    Empty,
-    Frames,
-    Logging,
-    SyncConcept,
-    Vars,
-} from "./engine/mod.ts";
+import { Logging, SyncConcept } from "./engine/mod.ts";
+import { APIConcept } from "./concepts/APIConcept.ts";
+import { StreamConcept } from "./concepts/StreamConcept.ts";
+import { VisionConcept } from "./concepts/VisionConcept.ts";
+import { AggregatorConcept } from "./concepts/AggregatorConcept.ts";
+import { FeedbackConcept } from "./concepts/FeedbackConcept.ts";
+import { NotificationConcept } from "./concepts/NotificationConcept.ts";
 
-export class CounterConcept {
-    public count = 0;
-    increment(_: Empty) {
-        this.count++;
-        return {};
-    }
-    decrement(_: Empty) {
-        this.count--;
-        return {};
-    }
-    _getCount(_: Record<PropertyKey, never>): { count: number }[] {
-        return [{ count: this.count }];
-    }
-}
+import { StartLiveStream } from "./syncs/StartLiveStream.ts";
+import { AnalyzeEveryFrame } from "./syncs/AnalyzeEveryFrame.ts";
+import { AggregateOnDetection } from "./syncs/AggregateOnDetection.ts";
+import { FeedbackOnThresholds } from "./syncs/FeedbackOnThresholds.ts";
+import { ServeLatest } from "./syncs/ServeLatest.ts";
 
-export class ButtonConcept {
-    clicked({ kind, by }: { kind: string; by: string }) {
-        return { kind, by };
-    }
-}
-
-export class NotificationConcept {
-    notify({ message, to }: { message: string; to: string }) {
-        console.log("Notification: ", message, " to:", to);
-        return { message, to };
-    }
-}
-
-// Create new Sync engine
+// Initialize engine
 const Sync = new SyncConcept();
 Sync.logging = Logging.TRACE;
 
-// Register concepts
+// Create and instrument concepts
 const concepts = {
-    Button: new ButtonConcept(),
-    Counter: new CounterConcept(),
-    Notification: new NotificationConcept(),
+  API: new APIConcept(),
+  Stream: new StreamConcept(),
+  Vision: new VisionConcept(),
+  Aggregator: new AggregatorConcept(),
+  Feedback: new FeedbackConcept(),
+  Notification: new NotificationConcept(),
 };
+const { API, Stream, Vision, Aggregator, Feedback, Notification } = Sync.instrument(concepts);
 
-// All concepts must be instrumented to be reactive and used in a sync
-const { Button, Counter, Notification } = Sync.instrument(concepts);
-
-// Each sync is a function that returns a declarative synchronization
-const ButtonIncrement = ({}: Vars) => ({
-    when: actions(
-        [Button.clicked, { kind: "increment_counter" }, {}],
-    ),
-    then: actions(
-        [Counter.increment, {}],
-    ),
+// Register syncs
+Sync.register({
+  StartLiveStream: StartLiveStream(API, Stream, Notification),
+  AnalyzeEveryFrame: AnalyzeEveryFrame(Stream, Vision),
+  AggregateOnDetection: AggregateOnDetection(Vision, Aggregator),
+  FeedbackOnThresholds: FeedbackOnThresholds(Aggregator, Feedback, Notification),
+  ServeLatest: ServeLatest(API, Aggregator, Feedback),
 });
 
-// Each sync can declare the used variables by destructuring the input vars object
-const NotifyWhenReachTen = ({ user, count }: Vars) => ({
-    when: actions(
-        [Button.clicked, { kind: "increment_counter", by: user }, {}],
-        [Counter.increment, {}, {}],
-    ),
-    where: (frames: Frames): Frames =>
-        frames
-            .query(Counter._getCount, {}, { count })
-            .filter(($) => $[count] > 10),
-    then: actions(
-        [Notification.notify, { message: "Reached 10", to: user }],
-    ),
-});
+// --- Demo runner (simulates a stream for 5 seconds) ---
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-// Register syncs by a unique name
-const syncs = { ButtonIncrement, NotifyWhenReachTen };
-Sync.register(syncs);
+// start stream
+const reqId = "req-start-1";
+await API.request({ request: reqId, method: "POST", path: "/streams/start", input: {} });
 
-// Clicking the button 10 times will eventually trigger the notification
-for (let i = 0; i < 11; i++) {
-    await Button.clicked({ kind: "increment_counter", by: "Xavier" });
+// push some frames (as if coming from a camera loop)
+for (let i = 0; i < 50; i++) {
+  await Stream.frame({ frameId: `f${i}`, ts: Date.now(), dataRef: "mvp" });
+  await sleep(100); // ~10 FPS simulated
 }
+
+// check latest metrics via API
+const checkId = "req-metrics-1";
+await API.request({ request: checkId, method: "GET", path: "/metrics/latest", input: {} });
+const out = API._get({ request: checkId });
+console.log("Latest API output:", out[0]?.output);
+

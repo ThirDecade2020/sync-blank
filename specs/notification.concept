@@ -1,0 +1,23 @@
+<concept_spec>
+
+concept Notification
+
+purpose
+    deliver messages to the teacher (console/UI)
+
+state
+    a set of Messages with
+        a ts Number
+        a message String
+
+actions
+    notify (message: String) : (message: String)
+        append message
+        return message
+
+queries
+    _getMessages () : (ts: Number, message: String)
+        list all messages
+
+</concept_spec>
+

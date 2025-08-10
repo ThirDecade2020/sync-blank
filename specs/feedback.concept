@@ -1,0 +1,23 @@
+<concept_spec>
+
+concept Feedback
+
+purpose
+    convert metrics into actionable lesson suggestions
+
+state
+    a set of Suggestions with
+        a ts Number
+        a suggestions Json
+
+actions
+    generate (avgStudentCount: Number, avgPhoneUsers: Number, phoneUseRatio: Number, rising: Boolean) : (ts: Number)
+        produce suggestions and store them
+        return ts
+
+queries
+    _latest () : (ts: Number, suggestions: Json)
+        return the most recent suggestions
+
+</concept_spec>
+

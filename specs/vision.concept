@@ -1,0 +1,25 @@
+<concept_spec>
+
+concept Vision
+
+purpose
+    per-frame detection of people and phones
+
+state
+    a counter Number for deterministic outputs in MVP
+    a set of Detections with
+        a frameId String
+        a studentCount Number
+        a phoneUsers Number
+
+actions
+    analyzeFrame (frameId: String) : (frameId: String, studentCount: Number, phoneUsers: Number)
+        run detection for the frame and store results
+        return frameId, studentCount, phoneUsers
+
+queries
+    _getDetections (frameId: String) : (frameId: String, studentCount: Number, phoneUsers: Number)
+        fetch detections for a frame
+
+</concept_spec>
+

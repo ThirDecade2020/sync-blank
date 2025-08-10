@@ -1,0 +1,25 @@
+<concept_spec>
+
+concept Aggregator
+
+purpose
+    maintain a rolling window of metrics and compute ratios/trends
+
+state
+    a set of Snapshots with
+        a snapshotId String
+        a ts Number
+        a studentCount Number
+        a phoneUsers Number
+
+actions
+    accumulate (frameId: String, studentCount: Number, phoneUsers: Number) : (snapshotId: String)
+        add a snapshot for the frame
+        return snapshotId
+
+queries
+    _windowStats (seconds: Number) : (avgStudentCount: Number, avgPhoneUsers: Number, phoneUseRatio: Number, rising: Boolean)
+        compute averages and simple rising trend over the last window
+
+</concept_spec>
+

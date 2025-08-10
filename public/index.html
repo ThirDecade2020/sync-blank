@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Classroom Analytics MVP</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0; background:#0b0f14; color:#e6edf3; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    .card { background:#11161c; border:1px solid #1f2730; border-radius: 14px; padding: 16px; margin: 12px 0; box-shadow: 0 6px 24px rgba(0,0,0,0.25); }
+    button { background:#1f6feb; color:#fff; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
+    button.secondary { background:#30363d; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px; }
+    .stat { background:#0d1117; border:1px solid #1f2730; border-radius:12px; padding:12px; text-align:center; }
+    .k { font-size:12px; color:#8b949e; }
+    .v { font-size:22px; font-weight:700; }
+    ul { margin:8px 0 0 20px; padding:0; }
+    .ok { color:#3fb950; }
+    .warn { color:#d29922; }
+
+    /* video + overlay */
+    .stage { position: relative; width: 100%; max-height: 520px; overflow: hidden; border-radius: 12px; border:1px solid #1f2730; background:#0d1117; }
+    #preview { width: 100%; height: auto; display: block; }
+    #overlay { position: absolute; inset: 0; pointer-events: none; }
+    .legend { margin-top:8px; font-size:12px; color:#8b949e; }
+    .chip { display:inline-block; padding:2px 8px; border-radius:999px; margin-right:6px; border:1px solid #1f2730; }
+  </style>
+
+  <!-- TensorFlow.js + COCO-SSD (browser) -->
+  <script src="https://unpkg.com/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+  <script src="https://unpkg.com/@tensorflow-models/coco-ssd"></script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>📹 Classroom Analytics MVP</h1>
+
+    <!-- Webcam preview with bounding boxes -->
+    <div class="card">
+      <div class="stage" id="stage">
+        <video id="preview" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div class="legend">
+        <span class="chip" style="background:rgba(56,189,248,.15)">person</span>
+        <span class="chip" style="background:rgba(251,191,36,.15)">cell phone</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="startBtn">Start stream</button>
+        <button id="stopBtn" class="secondary">Stop stream</button>
+        <span id="status" class="ok">idle</span>
+      </div>
+    </div>
+
+    <!-- Live metrics -->
+    <div class="card">
+      <div class="grid">
+        <div class="stat">
+          <div class="k">Avg students</div>
+          <div id="avgStudents" class="v">–</div>
+        </div>
+        <div class="stat">
+          <div class="k">Avg phone users</div>
+          <div id="avgPhones" class="v">–</div>
+        </div>
+        <div class="stat">
+          <div class="k">Phone use ratio</div>
+          <div id="ratio" class="v">–</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Suggestions -->
+    <div class="card">
+      <div class="k">Suggestions</div>
+      <ul id="suggestions"></ul>
+    </div>
+  </div>
+
+  <script>
+    // Elements
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const avgStudents = document.getElementById('avgStudents');
+    const avgPhones = document.getElementById('avgPhones');
+    const ratio = document.getElementById('ratio');
+    const suggestions = document.getElementById('suggestions');
+    const stage = document.getElementById('stage');
+    const video = document.getElementById('preview');
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+
+    // State
+    let streaming = false;
+    let mediaStream = null;
+    let model = null;
+    let detectLoopId = null;
+    let postTimerId = null;
+    let lastCounts = { students: 0, phones: 0 };
+    let lastStats = { avgStudentCount: 0, avgPhoneUsers: 0, phoneUseRatio: 0 };
+
+    // Helpers
+    function resizeCanvas() {
+      const rect = video.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      canvas.width = Math.max(1, Math.round(rect.width * dpr));
+      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function clearOverlay() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    function drawBox(x, y, w, h, color, label) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+      ctx.fillStyle = color;
+      ctx.font = 'bold 12px system-ui, -apple-system, Segoe UI, Roboto';
+      const pad = 4;
+      const textW = ctx.measureText(label).width + pad*2;
+      const textH = 16 + pad;
+      ctx.fillRect(x, Math.max(0, y - textH), textW, textH);
+      ctx.fillStyle = '#0b0f14';
+      ctx.fillText(label, x + pad, Math.max(12, y - 4));
+    }
+    async function postJSON(path, body) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json().catch(() => ({}));
+    }
+    async function getJSON(path) {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function startCamera() {
+      if (mediaStream) return;
+      mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      video.srcObject = mediaStream;
+      await video.play().catch(()=>{});
+      resizeCanvas();
+    }
+    function stopCamera() {
+      if (!mediaStream) return;
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+      video.srcObject = null;
+    }
+
+    async function ensureModel() {
+      if (model) return;
+      // lite model is smaller/faster
+      model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    }
+
+    function startDetectLoop() {
+      const targetMs = 500; // ~2 FPS for low CPU
+      let last = 0;
+      const loop = async (ts) => {
+        if (!streaming) return;
+        if (ts - last >= targetMs && model && video.readyState >= 2) {
+          last = ts;
+          const predictions = await model.detect(video, 6); // cap results
+          renderPredictions(predictions);
+          const students = predictions.filter(p => p.class === 'person' && p.score >= 0.5).length;
+          const phones = predictions.filter(p => p.class === 'cell phone' && p.score >= 0.5).length;
+          lastCounts = { students, phones };
+        }
+        detectLoopId = requestAnimationFrame(loop);
+      };
+      if (!detectLoopId) detectLoopId = requestAnimationFrame(loop);
+    }
+    function stopDetectLoop() {
+      if (detectLoopId) cancelAnimationFrame(detectLoopId);
+      detectLoopId = null;
+      clearOverlay();
+    }
+
+    function renderPredictions(preds) {
+      clearOverlay();
+      const rect = video.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+
+      for (const p of preds) {
+        const [x, y, w, h] = p.bbox;
+        const label = `${p.class} ${(p.score*100).toFixed(0)}%`;
+        const color = p.class === 'person' ? 'rgba(56,189,248,0.9)' : (p.class === 'cell phone' ? 'rgba(251,191,36,0.9)' : 'rgba(148,163,184,0.9)');
+        // Because canvas uses device pixels, but we set a transform to dpr, we can draw in CSS pixels directly
+        drawBox(x, y, w, h, color, label);
+      }
+
+      // HUD
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(12, 12, 340, 42);
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = 'bold 16px system-ui, -apple-system, Segoe UI, Roboto';
+      ctx.fillText(`Students: ${lastCounts.students}`, 20, 38);
+      ctx.fillText(`Phones: ${lastCounts.phones}`, 160, 38);
+    }
+
+    // Poll backend metrics & suggestions
+    async function refreshMetrics() {
+      try {
+        const data = await getJSON('/metrics/latest');
+        const statsArr = data?.stats ?? [];
+        const latest = data?.latest?.[0] ?? null;
+
+        if (statsArr.length) {
+          const { avgStudentCount, avgPhoneUsers, phoneUseRatio } = statsArr[0];
+          lastStats = { avgStudentCount, avgPhoneUsers, phoneUseRatio };
+          avgStudents.textContent = (avgStudentCount ?? 0).toFixed(0);
+          avgPhones.textContent = (avgPhoneUsers ?? 0).toFixed(0);
+          ratio.textContent = (phoneUseRatio ?? 0).toFixed(2);
+        }
+
+        suggestions.innerHTML = '';
+        const list = latest?.suggestions ?? [];
+        for (const s of list) {
+          const li = document.createElement('li');
+          li.textContent = s;
+          suggestions.appendChild(li);
+        }
+      } catch {}
+    }
+
+    // Periodically send counts to backend (once/sec)
+    function startPosting() {
+      if (postTimerId) return;
+      postTimerId = setInterval(async () => {
+        if (!streaming) return;
+        try {
+          await postJSON('/events/detection', {
+            studentCount: lastCounts.students,
+            phoneUsers: lastCounts.phones
+          });
+        } catch {}
+      }, 1000);
+    }
+    function stopPosting() {
+      if (postTimerId) clearInterval(postTimerId);
+      postTimerId = null;
+    }
+
+    // Resize observer keeps overlay matched to video size
+    const ro = new ResizeObserver(() => resizeCanvas());
+    ro.observe(stage);
+
+    // Buttons
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      try {
+        await startCamera();
+        await ensureModel();
+        await fetch('/streams/start', { method: 'POST' }); // informs backend
+        streaming = true;
+        startDetectLoop();
+        startPosting();
+        statusEl.textContent = 'streaming…';
+        statusEl.className = 'warn';
+      } catch (e) {
+        console.error(e);
+        alert('Could not start: ' + e.message);
+      } finally {
+        startBtn.disabled = false;
+      }
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      stopBtn.disabled = true;
+      try {
+        streaming = false;
+        stopDetectLoop();
+        stopPosting();
+        stopCamera();
+        await fetch('/streams/stop', { method: 'POST' });
+        statusEl.textContent = 'stopped';
+        statusEl.className = 'ok';
+      } catch (e) {
+        console.error(e);
+      } finally {
+        stopBtn.disabled = false;
+      }
+    });
+
+    // Kick off metrics polling
+    setInterval(refreshMetrics, 1000);
+    refreshMetrics();
+  </script>
+</body>
+</html>
+
